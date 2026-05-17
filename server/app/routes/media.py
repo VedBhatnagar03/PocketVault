@@ -1,4 +1,5 @@
 import mimetypes
+import shutil
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +35,19 @@ def list_media(folder: str = "", _: str = Depends(require_auth)):
         })
 
     return {"items": items, "folder": folder}
+
+
+@router.get("/stats")
+def storage_stats(_: str = Depends(require_auth)):
+    total, used, free = shutil.disk_usage(MEDIA_DIR)
+    vault_size = sum(f.stat().st_size for f in MEDIA_DIR.rglob("*") if f.is_file())
+    return {"total": total, "used": used, "free": free, "vault": vault_size}
+
+
+@router.get("/exists")
+def file_exists(name: str, folder: str = "", _: str = Depends(require_auth)):
+    target = MEDIA_DIR / folder / name if folder else MEDIA_DIR / name
+    return {"exists": target.exists()}
 
 
 @router.get("/file/{path:path}")

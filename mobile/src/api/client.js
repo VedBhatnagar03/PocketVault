@@ -11,22 +11,16 @@ export async function saveConfig(host, username, password) {
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ host, username, password }));
 }
 
-function authHeader(username, password) {
-  const encoded = btoa(`${username}:${password}`);
-  return { Authorization: `Basic ${encoded}` };
+export function authHeader(config) {
+  return { Authorization: `Basic ${btoa(`${config.username}:${config.password}`)}` };
 }
 
 export async function apiFetch(path, options = {}) {
   const config = await getConfig();
   if (!config) throw new Error('Not configured');
-  const { host, username, password } = config;
-  const url = `${host}${path}`;
-  const res = await fetch(url, {
+  const res = await fetch(`${config.host}${path}`, {
     ...options,
-    headers: {
-      ...authHeader(username, password),
-      ...(options.headers || {}),
-    },
+    headers: { ...authHeader(config), ...(options.headers || {}) },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res;
@@ -49,34 +43,60 @@ export async function createFolder(name, parent = '') {
   return res.json();
 }
 
-export async function uploadFiles(uris, folder = '', onProgress) {
+export async function getStorageStats() {
+  const res = await apiFetch('/api/media/stats');
+  return res.json();
+}
+
+export async function checkFileExists(name, folder = '') {
+  const params = new URLSearchParams({ name });
+  if (folder) params.append('folder', folder);
+  const res = await apiFetch(`/api/media/exists?${params}`);
+  return res.json();
+}
+
+export async function uploadFiles(uris, folder = '', onProgress, onFileProgress) {
   const config = await getConfig();
   if (!config) throw new Error('Not configured');
-  const { host, username, password } = config;
+  const { host } = config;
 
-  const form = new FormData();
-  for (const uri of uris) {
+  const results = { uploaded: [], skipped: [] };
+
+  for (let i = 0; i < uris.length; i++) {
+    const uri = uris[i];
     const name = uri.split('/').pop();
+
+    if (onFileProgress) onFileProgress(i, uris.length, name);
+
+    const form = new FormData();
     const ext = name.split('.').pop().toLowerCase();
     const type = ['mp4', 'mov', 'm4v'].includes(ext) ? `video/${ext}` : `image/${ext}`;
     form.append('files', { uri, name, type });
-  }
-  if (folder) form.append('folder', folder);
+    if (folder) form.append('folder', folder);
 
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${host}/api/upload`);
-    xhr.setRequestHeader('Authorization', `Basic ${btoa(`${username}:${password}`)}`);
-    xhr.upload.onprogress = (e) => {
-      if (onProgress && e.lengthComputable) onProgress(e.loaded / e.total);
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve(JSON.parse(xhr.responseText));
-      else reject(new Error(`HTTP ${xhr.status}`));
-    };
-    xhr.onerror = () => reject(new Error('Network error'));
-    xhr.send(form);
-  });
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${host}/api/upload`);
+      xhr.setRequestHeader('Authorization', authHeader(config).Authorization);
+      xhr.upload.onprogress = (e) => {
+        if (onProgress && e.lengthComputable) {
+          onProgress((i + e.loaded / e.total) / uris.length);
+        }
+      };
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          const data = JSON.parse(xhr.responseText);
+          results.uploaded.push(...data.uploaded);
+          resolve();
+        } else reject(new Error(`HTTP ${xhr.status}`));
+      };
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.send(form);
+    });
+  }
+
+  if (onFileProgress) onFileProgress(uris.length, uris.length, '');
+  return results;
 }
 
 export function mediaUrl(path, config) {
